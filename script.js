@@ -7,10 +7,123 @@ let initialAttendance = JSON.parse(localStorage.getItem('initialAttendance')) ||
 // Auth State
 let currentUserId = null;
 
+// ===================== CUSTOM DIALOGS =====================
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+    const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <span class="toast-icon">${icons[type] || icons.info}</span>
+        <span class="toast-message">${message}</span>
+        <button class="toast-close" onclick="dismissToast(this.parentElement)">✕</button>
+    `;
+    container.appendChild(toast);
+    setTimeout(() => dismissToast(toast), 4500);
+}
+
+function dismissToast(toast) {
+    if (!toast || toast.classList.contains('toast-hiding')) return;
+    toast.classList.add('toast-hiding');
+    setTimeout(() => toast.remove(), 260);
+}
+
+function showConfirm(title, message, confirmText = 'Confirm', confirmClass = 'btn-danger') {
+    return new Promise(resolve => {
+        const modal = document.getElementById('confirmModal');
+        document.getElementById('confirmModalTitle').textContent = title;
+        document.getElementById('confirmModalMessage').textContent = message;
+        const okBtn = document.getElementById('confirmModalOk');
+        okBtn.textContent = confirmText;
+        okBtn.className = `btn ${confirmClass}`;
+        modal.classList.add('active');
+
+        const handleOk     = () => { cleanup(); resolve(true); };
+        const handleCancel = () => { cleanup(); resolve(false); };
+        const handleBdrop  = (e) => { if (e.target === modal) { cleanup(); resolve(false); } };
+
+        function cleanup() {
+            modal.classList.remove('active');
+            okBtn.removeEventListener('click', handleOk);
+            document.getElementById('confirmModalCancel').removeEventListener('click', handleCancel);
+            modal.removeEventListener('click', handleBdrop);
+        }
+
+        okBtn.addEventListener('click', handleOk);
+        document.getElementById('confirmModalCancel').addEventListener('click', handleCancel);
+        modal.addEventListener('click', handleBdrop);
+    });
+}
+
+// Edit Lecture Modal state
+let _editLectureDay = null;
+let _editLectureId  = null;
+
+function openEditLectureModal(day, lectureId) {
+    const lectures = timetable[day];
+    if (!lectures) return;
+    const lecture = lectures.find(l => l.id === lectureId);
+    if (!lecture) return;
+    _editLectureDay = day;
+    _editLectureId  = lectureId;
+    document.getElementById('editLectureSubject').value = lecture.subject;
+    document.getElementById('editLectureType').value    = lecture.type || 'Lecture';
+    document.getElementById('editLectureModal').classList.add('active');
+}
+
+function closeEditLectureModal() {
+    document.getElementById('editLectureModal').classList.remove('active');
+    _editLectureDay = null;
+    _editLectureId  = null;
+}
+
+function saveEditLecture() {
+    const subject = document.getElementById('editLectureSubject').value.trim();
+    const type    = document.getElementById('editLectureType').value;
+    if (!subject) {
+        showToast('Please enter a subject name!', 'warning');
+        return;
+    }
+    const lectures = timetable[_editLectureDay];
+    if (!lectures) return;
+    const lecture = lectures.find(l => l.id === _editLectureId);
+    if (!lecture) return;
+    lecture.subject = subject;
+    lecture.type    = type;
+    saveTimetable();
+    renderTimetable();
+    updateStats();
+    closeEditLectureModal();
+    showToast('Lecture updated successfully!', 'success');
+}
+
+// ===================== END CUSTOM DIALOGS =====================
+
+
+// Theme Management
+function toggleTheme() {
+    document.body.classList.toggle('light-mode');
+    const isLightMode = document.body.classList.contains('light-mode');
+    localStorage.setItem('theme', isLightMode ? 'light' : 'dark');
+}
+
+function loadTheme() {
+    const savedTheme = localStorage.getItem('theme');
+    // Default is dark mode, only add light-mode class if explicitly saved as light
+    if (savedTheme === 'light') {
+        document.body.classList.add('light-mode');
+    }
+}
+
 // ============================================
 // Auth-aware Initialization
 // ============================================
 document.addEventListener('DOMContentLoaded', async function () {
+    // Load theme preference
+    loadTheme();
+    
     // Set up modal close listeners (these work regardless of auth)
     setupModalCloseListeners();
 
@@ -101,7 +214,8 @@ function handleUserLoggedOut() {
 }
 
 async function handleLogout() {
-    if (confirm('Are you sure you want to sign out?')) {
+    const confirmed = await showConfirm('Sign Out', 'Are you sure you want to sign out?', 'Sign Out', 'btn-danger');
+    if (confirmed) {
         await signOutUser();
     }
 }
@@ -174,6 +288,7 @@ function switchTab(tabName) {
 
     // Refresh content
     if (tabName === 'attendance') {
+        renderAttendanceCalendar();
         renderAttendanceLectures();
     } else if (tabName === 'dashboard') {
         renderDashboardSubjects();
@@ -201,7 +316,7 @@ function saveLecture() {
     const subject = document.getElementById('lectureSubject').value.trim();
 
     if (!subject) {
-        alert('Please enter a subject name!');
+        showToast('Please enter a subject name!', 'warning');
         return;
     }
 
@@ -221,8 +336,9 @@ function saveLecture() {
     closeLectureModal();
 }
 
-function deleteLecture(day, lectureId) {
-    if (!confirm('Are you sure you want to delete this lecture?')) return;
+async function deleteLecture(day, lectureId) {
+    const confirmed = await showConfirm('Delete Lecture', 'Are you sure you want to delete this lecture?', 'Delete', 'btn-danger');
+    if (!confirmed) return;
 
     timetable[day] = timetable[day].filter(lecture => lecture.id !== lectureId);
     if (timetable[day].length === 0) {
@@ -277,21 +393,7 @@ function renderTimetable() {
 }
 
 function editLecture(day, lectureId) {
-    const lectures = timetable[day];
-    const idx = lectures.findIndex(l => l.id === lectureId);
-    if (idx === -1) return;
-    const lecture = lectures[idx];
-    const newSubject = prompt('Edit subject:', lecture.subject);
-    if (newSubject !== null && newSubject.trim() !== '') {
-        lecture.subject = newSubject.trim();
-    }
-    const newType = prompt('Edit type (Lecture/Lab):', lecture.type || 'Lecture');
-    if (newType !== null && (newType === 'Lecture' || newType === 'Lab')) {
-        lecture.type = newType;
-    }
-    saveTimetable();
-    renderTimetable();
-    updateStats();
+    openEditLectureModal(day, lectureId);
 }
 
 function moveLecture(day, idx, direction) {
@@ -305,75 +407,216 @@ function moveLecture(day, idx, direction) {
     renderTimetable();
 }
 
-// Attendance Management
+// ===================== ATTENDANCE MANAGEMENT =====================
+// Week start = Sunday of the week containing attCalSelectedDate
+function getWeekStart(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() - d.getDay()); // rewind to Sunday
+    return d;
+}
+
+let attCalSelectedDate = new Date().toISOString().split('T')[0];
+let attWeekSunday = getWeekStart(attCalSelectedDate); // Date object, always a Sunday
+
 function setTodayDate() {
-    const today = new Date().toISOString().split('T')[0];
-    document.getElementById('attendanceDate').value = today;
-    document.getElementById('attendanceDate').addEventListener('change', renderAttendanceLectures);
+    const today = new Date();
+    attCalSelectedDate = today.toISOString().split('T')[0];
+    attWeekSunday = getWeekStart(attCalSelectedDate);
+    renderAttendanceCalendar();
+    renderAttendanceLectures();
+}
+
+function attWeekPrev() {
+    attWeekSunday = new Date(attWeekSunday);
+    attWeekSunday.setDate(attWeekSunday.getDate() - 7);
+    renderAttendanceCalendar();
+}
+
+function attWeekNext() {
+    attWeekSunday = new Date(attWeekSunday);
+    attWeekSunday.setDate(attWeekSunday.getDate() + 7);
+    renderAttendanceCalendar();
+}
+
+function getDateStatus(dateKey) {
+    const date = new Date(dateKey + 'T00:00:00');
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+    const allLectures = [...(timetable[dayName] || []), ...(extraLectures[dateKey] || [])];
+    if (allLectures.length === 0) return null;
+
+    let attended = 0, absent = 0, nc = 0, unmarked = 0;
+    allLectures.forEach(l => {
+        const s = attendance[`${dateKey}-${l.id}`] || 'none';
+        if (s === 'attended')           attended++;
+        else if (s === 'absent')        absent++;
+        else if (s === 'not-conducted') nc++;
+        else                            unmarked++;
+    });
+
+    if (unmarked > 0 && (attended + absent + nc) === 0) return 'unmarked';
+    if (attended > 0 && absent === 0 && unmarked === 0)  return 'attended';
+    if (absent > 0 && attended === 0 && unmarked === 0)  return 'absent';
+    if (nc === allLectures.length)                       return 'nc';
+    return 'mixed';
+}
+
+function renderAttendanceCalendar() {
+    const strip  = document.getElementById('attWeekStrip');
+    const label  = document.getElementById('attWeekLabel');
+    if (!strip || !label) return;
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const dayAbbr  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const monthAbbr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    // Build 7 days starting from attWeekSunday
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(attWeekSunday);
+        d.setDate(d.getDate() + i);
+        days.push(d);
+    }
+
+    // Label: e.g. "Feb 22 – Feb 28"
+    const first = days[0], last = days[6];
+    label.textContent = `${monthAbbr[first.getMonth()]} ${first.getDate()} – ${monthAbbr[last.getMonth()]} ${last.getDate()}, ${last.getFullYear()}`;
+
+    strip.innerHTML = days.map(d => {
+        const dateKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const isToday    = dateKey === todayStr;
+        const isSelected = dateKey === attCalSelectedDate;
+        const status     = getDateStatus(dateKey);
+
+        let dotHtml = '';
+        if (status === 'attended')  dotHtml = `<div class="att-week-dot-row"><div class="att-week-dot dot-attended"></div></div>`;
+        else if (status === 'absent')   dotHtml = `<div class="att-week-dot-row"><div class="att-week-dot dot-absent"></div></div>`;
+        else if (status === 'nc')       dotHtml = `<div class="att-week-dot-row"><div class="att-week-dot dot-nc"></div></div>`;
+        else if (status === 'mixed')    dotHtml = `<div class="att-week-dot-row"><div class="att-week-dot dot-attended"></div><div class="att-week-dot dot-absent"></div></div>`;
+        else if (status === 'unmarked') dotHtml = `<div class="att-week-dot-row"><div class="att-week-dot dot-unmarked"></div></div>`;
+        else                            dotHtml = `<div class="att-week-dot-row"></div>`;
+
+        const cls = [
+            'att-week-day',
+            isToday    ? 'att-week-day-today'    : '',
+            isSelected ? 'att-week-day-selected' : '',
+        ].filter(Boolean).join(' ');
+
+        return `
+            <div class="${cls}" onclick="selectAttDate('${dateKey}')">
+                <span class="att-week-day-name">${dayAbbr[d.getDay()]}</span>
+                <span class="att-week-day-num">${d.getDate()}</span>
+                ${dotHtml}
+            </div>`;
+    }).join('');
+}
+
+function selectAttDate(dateStr) {
+    attCalSelectedDate = dateStr;
+    renderAttendanceCalendar();
+    renderAttendanceLectures();
 }
 
 function renderAttendanceLectures() {
-    const dateInput = document.getElementById('attendanceDate');
-    const selectedDate = new Date(dateInput.value);
-    const dayName = selectedDate.toLocaleDateString('en-US', { weekday: 'long' });
-    const dateKey = dateInput.value;
+    const dateKey = attCalSelectedDate;
+    if (!dateKey) return;
 
-    // Get regular timetable lectures
-    const timetableLectures = timetable[dayName] || [];
+    const date = new Date(dateKey + 'T00:00:00');
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+    const dayFull  = date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-    // Get extra lectures for this date
+    const timetableLectures    = timetable[dayName] || [];
     const extraLecturesForDate = extraLectures[dateKey] || [];
-
-    // Combine both
     const allLectures = [...timetableLectures, ...extraLecturesForDate];
 
-    const container = document.getElementById('attendanceLectures');
+    // --- Date Banner ---
+    const banner = document.getElementById('attDateBanner');
+    if (banner) {
+        let attended = 0, absent = 0, nc = 0, total = 0;
+        allLectures.forEach(l => {
+            const s = attendance[`${dateKey}-${l.id}`] || 'none';
+            total++;
+            if (s === 'attended')      attended++;
+            else if (s === 'absent')   absent++;
+            else if (s === 'not-conducted') nc++;
+        });
 
+        const isToday = dateKey === new Date().toISOString().split('T')[0];
+        banner.innerHTML = `
+            <div class="att-date-banner-left">
+                <span class="att-date-banner-day">${isToday ? '🗓️ Today' : dayName}</span>
+                <span class="att-date-banner-full">${dayFull}</span>
+            </div>
+            <div class="att-date-banner-chips">
+                <span class="att-chip att-chip-total">📋 ${total} lecture${total !== 1 ? 's' : ''}</span>
+                ${attended > 0  ? `<span class="att-chip att-chip-green">✅ ${attended}</span>` : ''}
+                ${absent > 0    ? `<span class="att-chip att-chip-red">❌ ${absent}</span>` : ''}
+                ${nc > 0        ? `<span class="att-chip att-chip-gray">🚫 ${nc}</span>` : ''}
+            </div>
+        `;
+    }
+
+    // --- Lecture Cards ---
+    const container = document.getElementById('attendanceLectures');
     if (allLectures.length === 0) {
         container.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon">📚</div>
-                <div class="empty-state-text">No lectures scheduled for ${dayName}</div>
+            <div class="att-empty">
+                <div class="att-empty-icon">📚</div>
+                <div class="att-empty-text">No lectures on ${dayName}</div>
+                <div class="att-empty-sub">Add a lecture via the Timetable tab or use Quick Actions ➕</div>
             </div>
         `;
         return;
     }
 
-    container.innerHTML = `
-        <h3 style="margin: 20px 0;">Lectures on ${dayName}</h3>
-        ${allLectures.map(lecture => {
+    container.innerHTML = allLectures.map(lecture => {
         const lectureKey = `${dateKey}-${lecture.id}`;
         const status = attendance[lectureKey] || 'none';
         const isExtra = lecture.isExtra || false;
+        const type = lecture.type || 'Lecture';
+
+        const badgeClass = isExtra ? 'att-badge-extra' : (type === 'Lab' ? 'att-badge-lab' : 'att-badge-lecture');
+        const badgeIcon  = isExtra ? '⚡' : (type === 'Lab' ? '🔬' : '📖');
+
+        const pillMap = {
+            attended:      '<span class="att-status-pill attended">✅ Attended</span>',
+            absent:        '<span class="att-status-pill absent">❌ Absent</span>',
+            'not-conducted': '<span class="att-status-pill nc">🚫 Not Conducted</span>',
+            none:          '<span class="att-status-pill unmarked">⏳ Unmarked</span>',
+        };
 
         return `
-                <div class="lecture-item">
-                    <div class="lecture-info">
-                        <div class="lecture-name">${lecture.subject} (${lecture.type ? lecture.type : 'Lecture'}) ${isExtra ? '<span style=\"color: var(--warning); font-size: 0.9em;\">(Extra)</span>' : ''}</div>
+            <div class="att-lecture-card">
+                <div class="att-lecture-card-header">
+                    <div class="att-lecture-type-badge ${badgeClass}">${badgeIcon}</div>
+                    <div class="att-lecture-meta">
+                        <div class="att-lecture-name">${lecture.subject}</div>
+                        <div class="att-lecture-sub">${type}${isExtra ? ' &nbsp;·&nbsp; <span style="color:var(--warning)">Extra</span>' : ''}</div>
                     </div>
+                    ${pillMap[status] || pillMap['none']}
                 </div>
-                <div class="attendance-controls">
-                    <button class="attendance-btn ${status === 'attended' ? 'attended' : ''}" 
+                <div class="att-btns-row">
+                    <button class="att-mark-btn ${status === 'attended' ? 'active-attended' : ''}"
                             onclick="markAttendance('${lectureKey}', 'attended')">
-                        ✅ Attended
+                        <div class="btn-check-indicator"></div>✅ Attended
                     </button>
-                    <button class="attendance-btn ${status === 'absent' ? 'absent' : ''}" 
+                    <button class="att-mark-btn ${status === 'absent' ? 'active-absent' : ''}"
                             onclick="markAttendance('${lectureKey}', 'absent')">
-                        ❌ Absent
+                        <div class="btn-check-indicator"></div>❌ Absent
                     </button>
-                    <button class="attendance-btn ${status === 'not-conducted' ? 'not-conducted' : ''}" 
+                    <button class="att-mark-btn ${status === 'not-conducted' ? 'active-nc' : ''}"
                             onclick="markAttendance('${lectureKey}', 'not-conducted')">
-                        🚫 Not Conducted
+                        <div class="btn-check-indicator"></div>🚫 N/C
                     </button>
                 </div>
-            `;
-    }).join('')}
-    `;
+            </div>
+        `;
+    }).join('');
 }
 
 function markAttendance(lectureKey, status) {
     attendance[lectureKey] = status;
     saveAttendance();
+    renderAttendanceCalendar();
     renderAttendanceLectures();
     updateStats();
 }
@@ -433,20 +676,55 @@ function updateStats() {
 
 function updateProgressBar(percentage) {
     const fill = document.getElementById('progressFill');
-    const text = document.getElementById('progressText');
     const label = document.getElementById('progressPercentage');
+    const attendedCount = document.getElementById('attendedCount');
+    const conductedCount = document.getElementById('conductedCount');
+    const requiredCount = document.getElementById('requiredCount');
 
+    // Calculate stats for display
+    let totalLectures = 0;
+    let attendedLectures = 0;
+
+    // Add initial attendance data
+    Object.keys(initialAttendance).forEach(subject => {
+        const data = initialAttendance[subject];
+        totalLectures += data.conducted;
+        attendedLectures += data.attended;
+    });
+
+    // Add current attendance data
+    Object.keys(attendance).forEach(key => {
+        const status = attendance[key];
+        if (status !== 'not-conducted') {
+            totalLectures++;
+            if (status === 'attended') {
+                attendedLectures++;
+            }
+        }
+    });
+
+    // Calculate required lectures for 75%
+    const requiredFor75 = totalLectures > 0 ? Math.max(0, Math.ceil(totalLectures * 0.75) - attendedLectures) : 0;
+
+    // Update progress bar
     fill.style.width = percentage + '%';
-    text.textContent = percentage + '%';
-    label.textContent = percentage + '%';
+    label.textContent = Math.round(percentage);
+    
+    // Update stats
+    if (attendedCount) attendedCount.textContent = attendedLectures;
+    if (conductedCount) conductedCount.textContent = totalLectures;
+    if (requiredCount) requiredCount.textContent = requiredFor75;
 
     // Change color based on percentage
     if (percentage >= 75) {
-        fill.style.background = 'linear-gradient(90deg, var(--success), var(--primary))';
+        fill.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 50%, #047857 100%)';
+        label.parentElement.style.background = 'linear-gradient(135deg, #10b981, #059669)';
     } else if (percentage >= 65) {
-        fill.style.background = 'linear-gradient(90deg, var(--warning), var(--secondary))';
+        fill.style.background = 'linear-gradient(135deg, #f59e0b 0%, #d97706 50%, #b45309 100%)';
+        label.parentElement.style.background = 'linear-gradient(135deg, #f59e0b, #d97706)';
     } else {
-        fill.style.background = 'linear-gradient(90deg, var(--danger), var(--warning))';
+        fill.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 50%, #b91c1c 100%)';
+        label.parentElement.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
     }
 }
 
@@ -623,7 +901,7 @@ function renderFuturePlanner() {
                 ${days.map(day => {
         const lectures = timetable[day] || [];
         return `
-                        <div style="flex: 1; min-width: 180px; background: rgba(255,255,255,0.9); border: 2px solid rgba(148,163,184,0.2); border-radius: 14px; overflow: hidden; transition: all 0.3s ease;">
+                        <div style="flex: 1; min-width: 180px; background: rgba(255,255,255,0.9); border: 2px solid rgba(148,163,184,0.2); border-radius: 14px; overflow: hidden; transition: all 0.2s ease;">
                             <div style="background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #818cf8 100%); padding: 16px; text-align: center;">
                                 <div style="color: white; font-weight: 800; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.8px;">${day}</div>
                             </div>
@@ -657,10 +935,8 @@ function renderFuturePlanner() {
 
                     const isGradient = state === 'attended' || state === 'absent';
                     return `
-                                            <div style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 10px; padding: 14px; margin-bottom: 10px; cursor: pointer; transition: all 0.25s ease; text-align: center; ${isGradient ? 'box-shadow: 0 4px 12px rgba(0,0,0,0.15);' : ''}" 
-                                                onclick="toggleFutureLectureState('${lectureKey}')"
-                                                onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(99,102,241,0.2)';"
-                                                onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='${isGradient ? '0 4px 12px rgba(0,0,0,0.15)' : 'none'}';">
+                                            <div class="future-lecture-card" style="background: ${bgColor}; border: 2px solid ${borderColor}; ${isGradient ? 'box-shadow: 0 4px 12px rgba(0,0,0,0.15);' : ''}" 
+                                                onclick="toggleFutureLectureState('${lectureKey}')">
                                                 <div style="color: ${textColor}; font-weight: 700; font-size: 0.9em; line-height: 1.4;">
                                                     ${lecture.subject}<br>
                                                     <span style="font-size: 0.75em; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.3px;">(${lecture.type || 'Lecture'})</span>
@@ -868,7 +1144,7 @@ function saveExtraLecture() {
     const type = document.getElementById('extraLectureType').value;
 
     if (!date || !subject) {
-        alert('Please fill in all fields!');
+        showToast('Please fill in all fields!', 'warning');
         return;
     }
 
@@ -886,11 +1162,11 @@ function saveExtraLecture() {
     extraLectures[date].push(lecture);
     saveExtraLectures();
     closeExtraLectureModal();
-    alert('Extra lecture added successfully!');
+    showToast('Extra lecture added successfully!', 'success');
 
     // Refresh attendance view if on that date
-    const attendanceDate = document.getElementById('attendanceDate');
-    if (attendanceDate && attendanceDate.value === date) {
+    if (attCalSelectedDate === date) {
+        renderAttendanceCalendar();
         renderAttendanceLectures();
     }
 }
@@ -929,8 +1205,8 @@ function openInitialAttendanceModal() {
     const subjectTypes = getSubjectsWithTypesFromTimetable();
 
     if (subjectTypes.length === 0) {
-        alert('Please add subjects to your timetable first!');
         closeInitialAttendanceModal();
+        showToast('Please add subjects to your timetable first!', 'warning');
         return;
     }
 
@@ -982,7 +1258,7 @@ function removeInitialAttendanceRow(button) {
     if (container.children.length > 1) {
         button.parentElement.remove();
     } else {
-        alert('At least one row is required!');
+        showToast('At least one row is required!', 'warning');
     }
 }
 
@@ -999,7 +1275,7 @@ function saveInitialAttendance() {
         if (displayName) {
             const type = displayName.endsWith('(Lab)') ? 'Lab' : 'Lecture';
             if (attended > conducted) {
-                alert(`Attended cannot be more than conducted for ${displayName}!`);
+                showToast(`Attended cannot exceed conducted for ${displayName}!`, 'error');
                 return;
             }
             newInitialAttendance[displayName] = {
@@ -1011,7 +1287,7 @@ function saveInitialAttendance() {
     }
 
     if (Object.keys(newInitialAttendance).length === 0) {
-        alert('Please add at least one subject!');
+        showToast('Please add at least one subject!', 'warning');
         return;
     }
 
@@ -1020,7 +1296,7 @@ function saveInitialAttendance() {
     syncToSupabase();
     closeInitialAttendanceModal();
     updateStats();
-    alert('Initial attendance data saved successfully!');
+    showToast('Initial attendance data saved successfully!', 'success');
 }
 
 // Bulk Add Lectures Functions
@@ -1063,7 +1339,7 @@ function removeBulkRow(button) {
     if (container.children.length > 1) {
         button.parentElement.remove();
     } else {
-        alert('At least one lecture row is required!');
+        showToast('At least one lecture row is required!', 'warning');
     }
 }
 
@@ -1086,7 +1362,7 @@ function saveBulkLectures() {
         }
     }
     if (lectures.length === 0) {
-        alert('Please add at least one lecture!');
+        showToast('Please add at least one lecture!', 'warning');
         return;
     }
     // Replace the day's lectures instead of appending
@@ -1095,7 +1371,7 @@ function saveBulkLectures() {
     renderTimetable();
     updateStats();
     closeBulkAddModal();
-    alert(`Successfully saved ${lectures.length} lecture(s) for ${day}!`);
+    showToast(`Successfully saved ${lectures.length} lecture(s) for ${day}!`, 'success');
 }
 
 // Modal close listeners setup (called once)
@@ -1132,6 +1408,15 @@ function setupModalCloseListeners() {
         initialModal.addEventListener('click', function (e) {
             if (e.target === this) {
                 closeInitialAttendanceModal();
+            }
+        });
+    }
+
+    const editLectureModal = document.getElementById('editLectureModal');
+    if (editLectureModal) {
+        editLectureModal.addEventListener('click', function (e) {
+            if (e.target === this) {
+                closeEditLectureModal();
             }
         });
     }
@@ -1190,12 +1475,12 @@ function importTimetable(event) {
                 saveTimetable();
                 renderTimetable();
                 updateStats();
-                alert('Timetable imported successfully!');
+                showToast('Timetable imported successfully!', 'success');
             } else {
-                alert('Invalid timetable file.');
+                showToast('Invalid timetable file.', 'error');
             }
         } catch (err) {
-            alert('Error importing timetable: ' + err.message);
+            showToast('Error importing timetable: ' + err.message, 'error');
         }
     };
     reader.readAsText(file);
